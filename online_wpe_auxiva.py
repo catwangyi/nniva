@@ -162,10 +162,11 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
             X_D = X_D.reshape(N_effective, K, ref_num*(K**2)) # [513, 2, 2^2*ref_num]
             y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
             Y_all[i, ...] = (Wbp @ y_wpe[i,...].unsqueeze(-1)).squeeze(-1)
-            temp_diag = torch.zeros_like(W)
-            temp_diag[..., 0, 0] = Y_all[i,..., 0]
-            temp_diag[..., 1, 1] = Y_all[i,..., 1]
-            sig = torch.linalg.inv(Wbp) @ temp_diag
+            # temp_diag = torch.zeros_like(W)
+            # temp_diag[..., 0, 0] = Y_all[i,..., 0]
+            # temp_diag[..., 1, 1] = Y_all[i,..., 1]
+            # a = torch.diag_embed(Y_all[i, ...])
+            sig = torch.linalg.inv(Wbp) @ torch.diag_embed(Y_all[i, ...])
 
             wpe_sigma = (1-wpe_beta) * wpe_sigma + wpe_beta * sig @ sig.conj().transpose(-1, -2).contiguous() # [513, 2, 2]
 
