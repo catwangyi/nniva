@@ -6,9 +6,9 @@ from tqdm import tqdm
 
 epsi = torch.finfo(torch.float64).eps
 
-def init(X, alpha, xxh, temp_eye, U, V, p):
-    N_effective = max(X.shape)
-    K = min(X.squeeze().shape)
+def init(X, alpha, xxh, temp_eye, U, V):
+    N_effective = torch.maximum(X.shape)
+    K = torch.minimum(X.squeeze().shape)
     W = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     A = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     p = update_p(W, X, alpha, p)
@@ -92,27 +92,29 @@ def update_p(W, X, alpha, p):
             deo = epsi
         p[k] = (1-alpha) / deo # p就是1/r
     return p
-
-def update(V, alpha, p, xxh, X, W, U, A):
+def update(V, alpha, p, xxh, X, W, U, A, init=False):
+    if init==True:
+        temp_eye = torch.repeat_interleave(torch.eye(min(W.squeeze().shape), dtype = torch.complex128).unsqueeze(0), max(W.shape), dim = 0)
+        return init(X, alpha, xxh, temp_eye, U, V)
     p = update_p(W, X, alpha, p)
     V = update_v(V, alpha, p, xxh)
     U = update_u(W, xxh, p, alpha, U, X)
     A, W = update_a_w(A, W, U, V)
-    return A, W, U, V
+    return A, W, V, U
 
-def auxIVA_online(x, N_fft = 1024, hop_len = 0):
+def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None, ref_frames=10):
     print(x.shape, x.dtype)
     K, N_y  = x.shape
     # parameter
     N_fft = N_fft
     N_move = hop_len
     N_effective = int(N_fft/2+1) #也就是fft后，频率的最高点
-    window = torch.hann_window(N_fft, periodic = True, dtype=torch.float64)
+    window = torch.sqrt(torch.hann_window(N_fft, periodic = True, dtype=torch.float64))
 
     #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
     alpha = 0.96
     
-    initial = 0
+    index = 0
     iter_num = 1
 
     # initialization
@@ -127,15 +129,14 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
 
     # init
-    W = temp_eye.clone()
-    A = temp_eye.clone()
+    # W = temp_eye.clone()
+    # A = temp_eye.clone()
 
     X_mix_stft = torch.stft(x, 
                              n_fft = N_fft,
                              hop_length = N_move, 
                              window = window,
                              return_complex=True)
-
     C, N_fre, N_frame = X_mix_stft.shape
     X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]        
 
@@ -151,18 +152,18 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
                 phi_temp2 = X.unsqueeze(1).conj() # [513, 2] -> [513, 1, 2]
                 xxh = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 1] * [513, 1, 2] -> [513, 2, 2]
                 
-                if initial == 0:
-                    A, W, U, V = init(X, alpha, xxh, temp_eye, U, V, p)
-                    initial = 1
+                if index == 0 and iter_num==0:
+                    A, W, U, V = init(X, alpha, xxh, temp_eye, U, V)
                 else:
-                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A)
+                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A, True if index==0 and iter_num==0 else False)
                 # calculate output
                 A_temp = A * temp_eye # [513, 2, 2]
                 W_temp = W # [513, 2, 2]
                 Wbp = A_temp @ W_temp # [513, 2, 2] * [513, 2, 2]
                 Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] 
                 Y_all.append(Y_temp.permute(1, 0, 2))
-                
+                index = index + N_move
+
     Y = torch.cat(Y_all, dim = -1)
     print(Y.shape)
     y = torch.istft(Y, 
@@ -177,11 +178,15 @@ if __name__ == "__main__":
     import time
     mix_path = r'2Mic_2Src_Mic.wav'
     out_path = r'AuxIVA_online_pytorch.wav'
+    clean_path = r'2Mic_2Src_Ref.wav'
 
     # load singal
     x , sr = sf.read(mix_path)
+    clean, _ = sf.read(clean_path)
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
+    clean = torch.from_numpy(clean.T)
+    x = x[:, :clean.shape[-1]]
     start_time = time.time()
     y = auxIVA_online(x, N_fft = 2048, hop_len=512)
     end_time = time.time()
