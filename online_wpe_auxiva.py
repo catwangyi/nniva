@@ -1,14 +1,16 @@
 from logging import exception
 import os
+from tkinter import Y
+from numpy import transpose
 import torch
 import soundfile as sf
 from tqdm import tqdm
 
 epsi = torch.finfo(torch.float64).eps
 
-def init(X, alpha, xxh, temp_eye, U, V):
-    N_effective = torch.maximum(X.shape)
-    K = torch.minimum(X.squeeze().shape)
+def init(X, alpha, xxh, temp_eye, U, V, p):
+    N_effective = max(X.shape)
+    K = min(X.squeeze().shape)
     W = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     A = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     p = update_p(W, X, alpha, p)
@@ -92,30 +94,31 @@ def update_p(W, X, alpha, p):
             deo = epsi
         p[k] = (1-alpha) / deo # p就是1/r
     return p
-def update(V, alpha, p, xxh, X, W, U, A, init=False):
-    if init==True:
-        temp_eye = torch.repeat_interleave(torch.eye(min(W.squeeze().shape), dtype = torch.complex128).unsqueeze(0), max(W.shape), dim = 0)
-        return init(X, alpha, xxh, temp_eye, U, V)
+
+def update(V, alpha, p, xxh, X, W, U, A):
     p = update_p(W, X, alpha, p)
     V = update_v(V, alpha, p, xxh)
     U = update_u(W, xxh, p, alpha, U, X)
     A, W = update_a_w(A, W, U, V)
-    return A, W, V, U
+    return A, W, U, V
 
-def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None, ref_frames=10):
+def auxIVA_online(x, N_fft = 1024, hop_len = 0):
     print(x.shape, x.dtype)
     K, N_y  = x.shape
     # parameter
     N_fft = N_fft
     N_move = hop_len
     N_effective = int(N_fft/2+1) #也就是fft后，频率的最高点
-    window = torch.sqrt(torch.hann_window(N_fft, periodic = True, dtype=torch.float64))
+    window = torch.hann_window(N_fft, periodic = True, dtype=torch.float64)
 
     #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
-    alpha = 0.96
+    alpha_iva = 0.96
     
-    index = 0
-    iter_num = 1
+    initial = 0
+    ref_num=10
+    delay_num=2
+    gamma_wpe = 0.995
+    wpe_beta = 0.5
 
     # initialization
     Y_all = []
@@ -125,70 +128,95 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None, ref_frames=10)
     U = torch.zeros((N_effective, K, K, K), dtype = torch.complex128)
     W = torch.zeros((N_effective, K, K), dtype = torch.complex128)
     A = torch.zeros((N_effective, K, K), dtype = torch.complex128)
+    G_wpe = torch.zeros((N_effective, ref_num*(K**2), 1), dtype = torch.complex128)
+    K_wpe = torch.zeros((N_effective, ref_num*(K**2), K), dtype = torch.complex128)
     # phi = torch.zeros((N_effective, K, K), dtype = torch.complex128)
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
-
+    wpe_sigma = torch.zeros(N_effective, K, K)
     # init
-    # W = temp_eye.clone()
-    # A = temp_eye.clone()
+    W = temp_eye.clone()
+    A = temp_eye.clone()
+    Wbp = temp_eye.clone()
+    invQ_WPE = torch.repeat_interleave(torch.eye(ref_num*K**2, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
 
     X_mix_stft = torch.stft(x, 
                              n_fft = N_fft,
                              hop_length = N_move, 
                              window = window,
                              return_complex=True)
-    C, N_fre, N_frame = X_mix_stft.shape
-    X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]        
 
+    C, N_fre, N_frame = X_mix_stft.shape
+    X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]
     # aux_IVA_online
-    for iter in range(iter_num):
-        Y_all = []
-        for i in tqdm(range(N_frame), ascii=True):
+    for iter in range(1):
+        # init paras and buffers
+        Y_all = torch.zeros_like(X_mix_stft)
+        y_wpe = torch.zeros_like(X_mix_stft)
+        Y_all[0:ref_num+delay_num, ...] = X_mix_stft[0:ref_num+delay_num, ...]
+        y_wpe[0:ref_num+delay_num, ...] = X_mix_stft[0:ref_num+delay_num, ...]
+        wpe_buffer = X_mix_stft[0:ref_num, :, :]
+
+        for i in tqdm(range(ref_num+delay_num, N_frame), ascii=True):
+            wpe_buffer = torch.cat((wpe_buffer[1:,...], X_mix_stft[[i-delay_num], ...]), dim=0) #[ref_num, 513, 2]
+            X_D = torch.kron(torch.eye(K).unsqueeze(0), wpe_buffer.permute(1, 2, 0).contiguous()) #[1, 2, 2] * [513, 2, ref_num] -> [513, K**2, K*ref_num]
+            X_D = X_D.reshape(N_effective, K, ref_num*(K**2)) # [513, 2, 2^2*ref_num]
+            y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
+            Y_all[i, ...] = (Wbp @ y_wpe[i,...].unsqueeze(-1)).squeeze(-1)
+            temp_diag = torch.zeros_like(W)
+            temp_diag[..., 0, 0] = Y_all[i,..., 0]
+            temp_diag[..., 1, 1] = Y_all[i,..., 1]
+            sig = torch.linalg.inv(Wbp) @ temp_diag
+
+            wpe_sigma = (1-wpe_beta) * wpe_sigma + wpe_beta * sig @ sig.conj().transpose(-1, -2).contiguous() # [513, 2, 2]
+
+            nominator = invQ_WPE @ X_D.conj().transpose(-1, -2) # [513, 40, 40] * [513, 40, 2]-> [513, 40, 2]
+            K_wpe = nominator @ torch.linalg.inv(gamma_wpe * wpe_sigma + X_D @ nominator) # [513, 40, 2]
+            invQ_WPE = (invQ_WPE - K_wpe @ X_D @ invQ_WPE) / gamma_wpe
+            # G_wpe = G_wpe
+            G_wpe = G_wpe + K_wpe @ y_wpe[i, ...].unsqueeze(-1)
+            y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
+
             if torch.prod(torch.prod(X_mix_stft[i, :, :]==0))==1:
-                Y_all.append(X_mix_stft[i, :, :].unsqueeze(2).permute(1, 0, 2))
+                Y_all[i, :, :] = X_mix_stft[i, :, :]
             else:
-                X = X_mix_stft[i, :, :] # [time, fre, C] -> [fre, C]
+                X = y_wpe[i, :, :] # [time, fre, C] -> [fre, C]
                 phi_temp1 = X.unsqueeze(2)  # [513, 2] -> [513, 2, 1]
                 phi_temp2 = X.unsqueeze(1).conj() # [513, 2] -> [513, 1, 2]
                 xxh = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 1] * [513, 1, 2] -> [513, 2, 2]
                 
-                if index == 0 and iter_num==0:
-                    A, W, U, V = init(X, alpha, xxh, temp_eye, U, V)
+                if initial == 0:
+                    A, W, U, V = init(X, alpha_iva, xxh, temp_eye, U, V, p)
+                    initial = 1
                 else:
-                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A, True if index==0 and iter_num==0 else False)
+                    A, W, U, V = update(V, alpha_iva, p, xxh, X, W, U, A)
+                
                 # calculate output
                 A_temp = A * temp_eye # [513, 2, 2]
                 W_temp = W # [513, 2, 2]
                 Wbp = A_temp @ W_temp # [513, 2, 2] * [513, 2, 2]
-                Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] 
-                Y_all.append(Y_temp.permute(1, 0, 2))
-                index = index + N_move
+                Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] -> [513, 2, 1]
+                Y_all[[i], ...] = (Y_temp.permute(2, 0, 1)) #[2, 513, 1]
 
-    Y = torch.cat(Y_all, dim = -1)
-    print(Y.shape)
-    y = torch.istft(Y, 
-                    n_fft = N_fft, 
-                    hop_length = N_move, 
-                    window = window, 
-                    length = N_y)
-    print(y.shape)
-    return y
+    Y_all = Y_all.permute(2, 1, 0).contiguous()
+    y_wpe = y_wpe.permute(2, 1, 0).contiguous()
+    # print(Y_all.shape)
+    y_wpe = torch.istft(y_wpe, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
+    y_iva = torch.istft(Y_all, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
+    # print(y_iva.shape)
+    return y_iva, y_wpe
 
 if __name__ == "__main__":
     import time
     mix_path = r'2Mic_2Src_Mic.wav'
     out_path = r'AuxIVA_online_pytorch.wav'
-    clean_path = r'2Mic_2Src_Ref.wav'
 
     # load singal
     x , sr = sf.read(mix_path)
-    clean, _ = sf.read(clean_path)
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
-    clean = torch.from_numpy(clean.T)
-    x = x[:, :clean.shape[-1]]
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 2048, hop_len=512)
+    y, y_wpe = auxIVA_online(x, N_fft = 2048, hop_len=512)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)
+    sf.write('AuxIVA_online_pytorch_wpeout.wav', y_wpe.T, sr)

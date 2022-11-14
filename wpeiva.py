@@ -105,8 +105,9 @@ def joint_WPEIVA(x, beta, ref_frames, ref_delay, n_fft,ref_sig=None, hop_len=Non
         X_BUFFER = torch.cat((X_MIC[:, [frame], :], X_BUFFER[:, :-1, :]), dim=1)
         for freq in range(n_freq):
             # Precalculate the dereverberated signal X using the current WPE
-            X_D = X_BUFFER[:, -ref_frames:, freq]
-            X_D = torch.kron(torch.eye(n_chan), X_D).reshape(n_chan*n_chan*ref_frames, n_chan)
+            X_D = X_BUFFER[:, -ref_frames:, freq] # [2, 10]
+            X_D = torch.kron(torch.eye(n_chan), X_D) # [4, 20]
+            X_D = X_D.reshape(n_chan*n_chan*ref_frames, n_chan)
             X_D = X_D.T
             X[:, frame, freq] = X_BUFFER[:, 0, freq] - X_D @ G_WPE[:, freq] # X_buffer减去混响部分
 
@@ -116,14 +117,19 @@ def joint_WPEIVA(x, beta, ref_frames, ref_delay, n_fft,ref_sig=None, hop_len=Non
                 Sigma[..., freq] = alpha_wpe * Sigma[..., freq] + (1-alpha_wpe) * (D_tmp @ torch.conj(D_tmp.T))
             else:
                 Y[:, frame, freq] = Wbp[..., freq] @ X[:, frame, freq]
-                D_tmp = torch.linalg.inv(Wbp[..., freq]) @ torch.diag(Y[:, frame, freq]) # 解混响之后用wbp进行分离，分离完取对角线元素进行合成，得到D_tmp
+                a = torch.linalg.inv(Wbp[..., freq])
+                c = Y[:, frame, freq]
+                # print(c)
+                b = torch.diag(c)
+                # print(b)
+                D_tmp = torch.linalg.inv(Wbp[..., freq]) @ torch.diag(Y[:, frame, freq]) # 解混响之后用wbp进行分离，分离完取对角线元素进行合成，得到D_tmp -> [2, 2]
                 Sigma[..., freq] = alpha_wpe * Sigma[..., freq] + (1-alpha_wpe) * (D_tmp @ torch.conj(D_tmp.T)) # spatial covariance matrix 更新
             
             # Update the WPE parameter 'g_wpe'
-            nominator = invQ_WPE[..., freq] @ torch.conj(X_D.T)
+            nominator = invQ_WPE[..., freq] @ torch.conj(X_D.T) # [40, 2]
             K_WPE[..., freq] = nominator @ torch.linalg.inv(beta_wpe * Sigma[..., freq] + X_D @ nominator)
             invQ_WPE[..., freq] = (invQ_WPE[..., freq] - K_WPE[..., freq] @ (X_D @ invQ_WPE[..., freq])) / beta_wpe
-            G_WPE[:, freq] = G_WPE[:, freq] + K_WPE[..., freq] @ X[:, frame, freq] # 和论文里不一样
+            G_WPE[:, freq] = G_WPE[:, freq] + K_WPE[..., freq] @ X[:, frame, freq]
 
             # Calculate the dereverberation output
 
