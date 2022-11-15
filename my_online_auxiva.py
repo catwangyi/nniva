@@ -1,128 +1,189 @@
-
-from inspect import FrameInfo
-from re import A
+from logging import exception
+import os
 import torch
-import torchaudio
+import soundfile as sf
 from tqdm import tqdm
 
-def update_p(W, x_temp):
-    '''
-    args:
-        W : [F, N, N]
-        x_temp : [F, N, 1]
-    '''
-    Y = W @ x_temp # [F, N, 1]
-    return 1 / torch.sqrt(torch.sum(torch.abs(Y)**2, dim=0)).clamp_min(1e-12)# [N, 1]
+epsi = torch.finfo(torch.float64).eps
 
-def update_demixing_matrix(U_k, A, x_temp, p_k, alpha, Vk, k, init):
-    '''
-    args:
-        U_k : [F, N, N]
-        V_k : [F, N, N]
-        A : [F, N, N]
-        x_temp : [F, N, 1]
-        p_k : [1]
-    '''
-    A_k = A[..., k].unsqueeze(-1) # [F, N , 1]
-    p = (1-alpha) * p_k #[1]
-    Unum = p * U_k @ x_temp @ x_temp.conj().transpose(-1, -2) @ U_k #  [F, N, N] * [F, N, 1] * [F, 1, N] * [F, N, N] - >[F, N, N]
-    Udeo = alpha**2 + alpha * p * x_temp.conj().transpose(-1, -2) @ U_k @ x_temp # [1, N, 1] * [F, 1, N] * [F, N, N ] * [F, N, 1] -> [F, N, 1]
-    Udeo = Udeo
-    U_k = U_k / alpha - Unum / (Udeo)
+def init(X, alpha, xxh, temp_eye, U, V, p):
+    N_effective = max(X.shape)
+    K = min(X.squeeze().shape)
+    W = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
+    A = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
+    p = update_p(W, X, alpha, p)
+    for k in range(K):
+        V[:, :, :, k] = (xxh *p[k]) * temp_eye
+        U[:, :, :, k] = 1 / (V[:, :, :, k] + epsi) * temp_eye
+    return A, W, U, V
 
-    if init:
-        inv = U_k
-    else:
-        inv = U_k @ A_k # [F, N, N] * [F, N, 1] ->[F, N, 1]
-    wk = inv.conj().transpose(-1, -2) # [F, 1, N]
-    new_wk = wk / torch.sqrt(wk @ Vk @ inv) # [F, 1, N]
-    dw = new_wk - wk # [F, 1, N]
-    wk = new_wk.squeeze(1) # [F, N]
+def inverse_2x2_matrix(mat):
+    assert mat.shape[-1] == mat.shape[-2] and mat.shape[-2]==2
+    a = mat[..., 0, 0]
+    b = mat[..., 0, 1]
+    c = mat[..., 1, 0]
+    d = mat[..., 1, 1]
+    if(torch.any(a*d == b*c)):
+        raise Exception('mat can not be inversed')
+    new_mat = torch.zeros_like(mat)
+    new_mat[..., 0, 0] = d / (a*d-b*c)
+    new_mat[..., 0, 1] = -b / (a*d-b*c)
+    new_mat[..., 1, 0] = -c / (a*d-b*c)
+    new_mat[..., 1, 1] = a / (a*d-b*c)
+    return new_mat
+
+def update_a_w(A, W, U, V):
+    K_num = W.shape[-1]
+    for k in range(K_num):
+        U_temp = U[:, :, :, k] # [513, 2, 2] # U = V^-1
+        A_temp = A[:, :, k].unsqueeze(2) # [513, 2] -> [513, 2, 1]
+        temp_inv = torch.matmul(U_temp, A_temp) # temp_inv = V^-1@W^-1 = (W@V)^-1, 就是指wk的意思
+        # update W
+        W_k = temp_inv.conj().permute(0, 2, 1) # [513, 2, 1] -> [513, 1, 2]
+        # V_temp = V[:, :, :, k] # [513, 2, 2]
+        temp_W_k = torch.sqrt(temp_inv.conj().permute(0, 2, 1) @ V[:, :, :, k] @ temp_inv) # [513, 1, 2] * [513, 2, 2] * [513, 2, 1]
+        W_k = W_k / temp_W_k # [513, 1, 2]
+        dw = W_k - W[:, k, :].unsqueeze(1) # [513, 1 ,2]
+        W[:, k, :] = W_k[:, 0, :] # [513, 2]
+        #update A
+        # A_temp = A # [513, 2, 2]
+        # A_temp_2 = A[:, :, k].unsqueeze(2) # [513, 2] -> [513, 2, 1]
+        Anumer = A[:, :, k].unsqueeze(2) @ dw @ A # [513, 2, 1] * [513, 1, 2] * [513, 2, 2]
+        Adenom_new = 1  + dw @ A[:, :, k].unsqueeze(2) # [513, 1, 2] * [513, 2, 1]
+        Adenom_new = Adenom_new.real
+        epsi_mat = torch.ones_like(Adenom_new) * epsi
+        Adenom_new = torch.maximum(Adenom_new, epsi_mat)
+        # A_temp = Anumer / Adenom_new # [513, 2, 2] / [513, 1, 1]
+        A = A - Anumer / Adenom_new # [513, 2, 2]
+    return A, W
+
+def update_v(V, alpha, p, xxh):
+    K_num = V.shape[1]
+    for k in range(K_num):
+        V[:, :, :, k] = alpha * V[:, :, :, k] + p[k] * xxh # phi就是x*x^H
+    return V
+
+def update_u(W, xxh, p, alpha, U, X):
+    N_effective, K_num = W.shape[0], W.shape[-1]
+    for k in range(K_num):
+        Unumer = p[k] *  U[:, :, :, k] @ xxh @  U[:, :, :, k] # x * [513, 2, 2] * [513, 2, 2] * [513, 2, 2]
+        # Udenom_temp_X1 = X.conj().unsqueeze(1) # [513, 2] -> [513, 1, 2]
+        # Udenom_temp_X2 = X.unsqueeze(2) # [513, 2] -> [513, 2, 1]
+        # Udenom_temp_U =  U[:, :, :, k] # [2, 2, 513] -> [513, 2, 2]
+        Udenom = alpha**2 + alpha * p[k] * X.conj().unsqueeze(1) @ U[:, :, :, k] @ X.unsqueeze(2)
+        epsi_mat = torch.ones((N_effective, 1, 1), dtype = torch.float64) * epsi
+        # Udenom = Udenom.real
+        Udenom = torch.maximum(Udenom.real, epsi_mat)
+        # U_temp =  U[:, :, :, k] / alpha - Unumer / Udenom
+        U[:, :, :, k] = U[:, :, :, k] / alpha - Unumer / Udenom # [513, 2, 2]
+    return U
+
+def update_p(W, X, alpha, p):
+    K_num = W.shape[-1]
+    for k in range(K_num): 
+        # r_hat_W1 = W[:, k, :].unsqueeze(1) # [513, 2] -> [513, 1, 2]
+        # r_hat_phi = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 2]
+        # r_hat_W2 = W[:, k, :].conj().unsqueeze(2) # [513, 2] ->[513, 2, 1]
+        temp_sum = torch.sum(W[:, k, :].unsqueeze(1) @ X.unsqueeze(2) @\
+        X.unsqueeze(1).conj() @ W[:, k, :].conj().unsqueeze(2))
+        # a = r_hat_W1 @ X.unsqueeze(2) @ X.unsqueeze(1).conj() @ r_hat_W2
+        deo = torch.sqrt(temp_sum.real)
+        if deo < epsi:
+            deo = epsi
+        p[k] = (1-alpha) / deo # p就是1/r
+    return p
+
+def update(V, alpha, p, xxh, X, W, U, A):
+    p = update_p(W, X, alpha, p)
+    V = update_v(V, alpha, p, xxh)
+    U = update_u(W, xxh, p, alpha, U, X)
+    A, W = update_a_w(A, W, U, V)
+    return A, W, U, V
+
+def auxIVA_online(x, N_fft = 1024, hop_len = 0):
+    print(x.shape, x.dtype)
+    K, N_y  = x.shape
+    # parameter
+    N_fft = N_fft
+    N_move = hop_len
+    N_effective = int(N_fft/2+1) #也就是fft后，频率的最高点
+    window = torch.hann_window(N_fft, periodic = True, dtype=torch.float64)
+
+    #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
+    alpha = 0.96
     
-    Anum = A_k @ dw @ A # [F, N, N] * [F, N, N] * [F, N, N]
-    Adeo = 1 + dw @ A_k
-    Adeo = Adeo
-    # Adeo = Adeo
-    # temp_a = A
-    # print(torch.min(Anum /Adeo))
-    if torch.any(torch.isnan(Anum)):
-        print('Anum is nan') 
-    if torch.any(torch.isnan(Adeo)):
-        print('Adeo is nan')
-    A = A - Anum / Adeo
-    # if torch.any(torch.isnan(U_k)) or torch.any(torch.isnan(A)):
-    #     a = 1
-    #     if torch.any(torch.isnan(U_k)) and torch.any(torch.isnan(A)):
-    #         a = 1
-    #     elif torch.any(torch.isnan(A)):
-    #         a = 1
-    #     elif torch.any(torch.isnan(U_k)):
-    #         a = 1
-    if torch.any(torch.isnan(A)):
-        print('nan!')
-        a = 1
-    return A, U_k, wk
+    initial = 0
+    iter_num = 1
 
-    
+    # initialization
+    Y_all = []
+    # r = torch.zeros((K, 1), dtype = torch.float64)
+    p  = torch.zeros((K, 1), dtype = torch.float64)
+    V = torch.zeros((N_effective, K, K, K), dtype = torch.complex128)
+    U = torch.zeros((N_effective, K, K, K), dtype = torch.complex128)
+    W = torch.zeros((N_effective, K, K), dtype = torch.complex128)
+    A = torch.zeros((N_effective, K, K), dtype = torch.complex128)
+    # phi = torch.zeros((N_effective, K, K), dtype = torch.complex128)
+    temp_eye = torch.repeat_interleave(torch.eye(K, dtype = torch.complex128).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
 
-def online_auxiva(X, iter_num=1, alpha=0.996):
-    n_channel, frame_num, freq_num = X.shape
-    U = torch.zeros(freq_num, n_channel, n_channel, n_channel, dtype=torch.complex64) # [F, N, N, N]
-    W = torch.zeros(freq_num, n_channel,  n_channel, dtype=torch.complex64) # [F, N, N]
-    A = torch.zeros(freq_num, n_channel,  n_channel, dtype=torch.complex64) # [F, N, N]
-    V = torch.zeros(freq_num, n_channel, n_channel, n_channel, dtype=torch.complex64)# [F, N, N, N]
-    EYE = torch.repeat_interleave(torch.eye(n_channel, dtype=torch.complex64).unsqueeze(0), repeats=freq_num, dim=0) # [F, N, N]
-    Y = torch.zeros_like(X)
-    for frame_idx in tqdm(range(frame_num)):
-        # print(frame_idx)
-        
-        if frame_idx == 0:
-            # initialization
-            W = EYE.clone() # [F, N, N]
-            A = EYE.clone() # [F, N, N]
-            Y[:, frame_idx, :] = X[:, frame_idx, :]
-            x_temp = X[:, [frame_idx], :].permute(2, 0, 1).contiguous()
-            p = update_p(W, x_temp)# [N, 1] 这里的p就是1/r
-            for k in range(n_channel):
-                V[..., k] = x_temp @ x_temp.conj().transpose(-1, -2) * EYE * p[k]
-                # U[..., k] = 1 / (V[..., k] + 1e-6) * EYE
-                U[..., k] = EYE.clone()
-        else:
-            for iter_idx in range(iter_num):
-                if torch.prod(torch.prod(X[:, frame_idx,:]==0))==1:
-                     Y[:, frame_idx, :] = 0
+    # init
+    W = temp_eye.clone()
+    A = temp_eye.clone()
+
+    X_mix_stft = torch.stft(x, 
+                             n_fft = N_fft,
+                             hop_length = N_move, 
+                             window = window,
+                             return_complex=True)
+
+    C, N_fre, N_frame = X_mix_stft.shape
+    X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]        
+
+    # aux_IVA_online
+    for iter in range(iter_num):
+        Y_all = []
+        for i in tqdm(range(N_frame), ascii=True):
+            if torch.prod(torch.prod(X_mix_stft[i, :, :]==0))==1:
+                Y_all.append(X_mix_stft[i, :, :].unsqueeze(2).permute(1, 0, 2))
+            else:
+                X = X_mix_stft[i, :, :] # [time, fre, C] -> [fre, C]
+                phi_temp1 = X.unsqueeze(2)  # [513, 2] -> [513, 2, 1]
+                phi_temp2 = X.unsqueeze(1).conj() # [513, 2] -> [513, 1, 2]
+                xxh = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 1] * [513, 1, 2] -> [513, 2, 2]
+                
+                if initial == 0:
+                    A, W, U, V = init(X, alpha, xxh, temp_eye, U, V, p)
+                    initial = 1
                 else:
-                    x_temp = X[:, [frame_idx], :].permute(2, 0, 1).contiguous() # [F, N, 1]
-                    p = update_p(W, x_temp)# [N, 1] 这里的p就是1/r
-                    for k in range(n_channel):
-                        V[:, :, :, k] = alpha * V[:, :, :, k] + (1-alpha) * p[k] * x_temp @ x_temp.conj().transpose(-1, -2)
-                        if torch.any(torch.isnan(p[k])):
-                            print('nan!')
-                        # U_k, A, x_temp, phi_k, alpha, Vk, k
-                        if torch.any(torch.isnan(U[..., k])):
-                            print('1nan!')
-                        if torch.any(torch.isnan(A)):
-                            print('2nan!')
-                        if torch.any(torch.isnan(x_temp)):
-                            print('3nan!')
-                        if torch.any(torch.isnan(p[k])):
-                            print('4nan!')
-                        if torch.any(torch.isnan(V[..., k])):
-                            print('5nan!')
-                        A, U[..., k], W[:, k, :] = update_demixing_matrix(U[..., k], A, x_temp, p[k], alpha, V[..., k], k, True if frame_idx==0 else False) 
-                        if torch.any(torch.isnan(W[:, k, :])):
-                            print('6nan!')
-                    W_bp = A @ EYE @ W
-                    Y[:, frame_idx, :] = (W_bp @ x_temp).squeeze(-1).permute(-1, -2)
-    return Y
-
-
+                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A)
+                # calculate output
+                A_temp = A * temp_eye # [513, 2, 2]
+                W_temp = W # [513, 2, 2]
+                Wbp = A_temp @ W_temp # [513, 2, 2] * [513, 2, 2]
+                Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] 
+                Y_all.append(Y_temp.permute(1, 0, 2))
+                
+    Y = torch.cat(Y_all, dim = -1)
+    print(Y.shape)
+    y = torch.istft(Y, 
+                    n_fft = N_fft, 
+                    hop_length = N_move, 
+                    window = window, 
+                    length = N_y)
+    print(y.shape)
+    return y
 
 if __name__ == "__main__":
-    # X = torch.rand(2, 1200, 513, dtype=torch.complex64)
-    sig, sr = torchaudio.load('2Mic_2Src_Mic.wav')
-    X = torch.stft(sig, n_fft=1024, hop_length=256, return_complex=True,window=torch.hann_window(1024))
-    Y = online_auxiva(X.permute(0, -1, -2))
-    y = torch.istft(Y.transpose(-1, -2), n_fft=1024, hop_length=256,window=torch.hann_window(1024))
-    import soundfile
-    soundfile.write('my_sep.wav', y.numpy().T, samplerate=sr)
+    import time
+    mix_path = r'2Mic_2Src_Mic.wav'
+    out_path = r'AuxIVA_online_pytorch.wav'
+
+    # load singal
+    x , sr = sf.read(mix_path)
+    print(x.shape, x.dtype)
+    x = torch.from_numpy(x.T)
+    start_time = time.time()
+    y = auxIVA_online(x, N_fft = 2048, hop_len=512)
+    end_time = time.time()
+    print('the cost of time {}'.format(end_time - start_time))
+    sf.write(out_path, y.T, sr)
