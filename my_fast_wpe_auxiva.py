@@ -1,7 +1,7 @@
 from logging import exception
 import os
 from tkinter import Y
-from numpy import transpose
+from numpy import dtype, transpose
 import torch
 import soundfile as sf
 from tqdm import tqdm
@@ -10,7 +10,7 @@ epsi = torch.finfo(torch.float64).eps
 complex_type = torch.complex128
 real_type = torch.float64
 
-def init(X, alpha, xxh, temp_eye, U, V, Y=None):
+def init(X, alpha, xxh, temp_eye, U, V, p, Y=None):
     N_effective = max(X.shape)
     K = min(X.squeeze().shape)
     W = torch.repeat_interleave(torch.eye(K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
@@ -108,7 +108,7 @@ def update(V, alpha, xxh, X, W, U, A, Y):
     A, W = update_a_w(A, W, U, V)
     return A, W, U, V
 
-def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
+def auxIVA_online(x, N_fft = 2048, hop_len = 0, label=None):
     print(x.shape, x.dtype)
     K, N_y  = x.shape
     # parameter
@@ -129,13 +129,13 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     # initialization
     Y_all = []
     # r = torch.zeros((K, 1), dtype = torch.float64)
-    
+    p  = torch.zeros((K, 1), dtype = real_type)
     V = torch.zeros((N_effective, K, K, K), dtype = complex_type)
     U = torch.zeros((N_effective, K, K, K), dtype = complex_type)
     W = torch.zeros((N_effective, K, K), dtype = complex_type)
     A = torch.zeros((N_effective, K, K), dtype = complex_type)
-    G_wpe = torch.zeros((N_effective, ref_num*(K**2), 1), dtype = complex_type)
-    K_wpe = torch.zeros((N_effective, ref_num*(K**2), K), dtype = complex_type)
+    G_wpe = torch.zeros((N_effective, ref_num*K, 1), dtype = complex_type)
+    K_wpe = torch.zeros((N_effective, ref_num*K, K), dtype = complex_type)
     # phi = torch.zeros((N_effective, K, K), dtype = complex_type)
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     wpe_sigma = torch.zeros(N_effective, K, K)
@@ -143,7 +143,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     W = temp_eye.clone()
     A = temp_eye.clone()
     Wbp = temp_eye.clone()
-    invQ_WPE = torch.repeat_interleave(torch.eye(ref_num*K**2, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
+    invQ_WPE = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
 
     X_mix_stft = torch.stft(x, 
                              n_fft = N_fft,
@@ -157,8 +157,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                              window = window,
                              return_complex=True)
         label = label.permute(2, 1, 0)
+
     C, N_fre, N_frame = X_mix_stft.shape
     X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]
+    X_D = torch.zeros(N_effective, K, K*ref_num, dtype=torch.complex128)
     # aux_IVA_online
     for iter in range(1):
         # init paras and buffers
@@ -169,10 +171,12 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
         # wpe_buffer = X_mix_stft[0:ref_num, :, :]
 
         for i in tqdm(range(N_frame), ascii=True):
-            if i >=delay_num+ref_num:
-                wpe_buffer = X_mix_stft[i-delay_num-ref_num:i-delay_num]
-                X_D = torch.kron(torch.eye(K).unsqueeze(0), wpe_buffer.permute(1, 2, 0).contiguous()) #[1, 2, 2] * [513, 2, ref_num] -> [513, K**2, K*ref_num]
-                X_D = X_D.reshape(N_effective, K, ref_num*(K**2)) # [513, 2, 2^2*ref_num]
+            if i >= ref_num+delay_num:
+                wpe_buffer = X_mix_stft[i-delay_num-ref_num:i-delay_num].permute(1, 2, 0) # [513, 2, 10]
+                # X_D = torch.kron(torch.eye(K).unsqueeze(0), wpe_buffer.permute(1, 2, 0).contiguous()) #[1, 2, 2] * [513, 2, ref_num] -> [513, K**2, K*ref_num]
+                # X_D = X_D.reshape(N_effective, K, ref_num*(K**2)) # [513, 2, 2^2*ref_num]
+                X_D[...,0,:ref_num] = wpe_buffer[...,0,:]
+                X_D[...,1,-ref_num:] = wpe_buffer[...,1,:]
                 y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
                 Y_all[i, ...] = (Wbp @ y_wpe[i,...].unsqueeze(-1)).squeeze(-1)
                 # temp_diag = torch.zeros_like(W)
@@ -189,8 +193,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                 y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
             else:
                 y_wpe[i, :, :] = X_mix_stft[i, ...]
-            if torch.prod(torch.prod(y_wpe[i, :, :]==0))==1:
-                Y_all[i, :, :] = y_wpe[i, :, :]
+            if torch.prod(torch.prod(X_mix_stft[i, :, :]==0))==1:
+                Y_all[i, :, :] = X_mix_stft[i, :, :]
             else:
                 X = y_wpe[i, :, :] # [time, fre, C] -> [fre, C]
                 phi_temp1 = X.unsqueeze(2)  # [513, 2] -> [513, 2, 1]
@@ -221,7 +225,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
 if __name__ == "__main__":
     import time
     mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\slow_wpe_iva.wav'
+    out_path = r'audio\fast_wpe_iva.wav'
     clean_path = r'audio\2Mic_2Src_Ref.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T)
@@ -235,10 +239,11 @@ if __name__ == "__main__":
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)
-    sf.write('audio\slow_wpe_iva_wpeout.wav', y_wpe.T, sr)
+    sf.write(r'audio\fast_wpe_iva_wpeout.wav', y_wpe.T, sr)
 
+    import time
     mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\slow_wpe_iva_use_clean.wav'
+    out_path = r'audio\fast_wpe_iva_use_clean.wav'
     clean_path = r'audio\2Mic_2Src_Ref.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T)
@@ -252,4 +257,4 @@ if __name__ == "__main__":
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)
-    sf.write('audio\slow_wpe_iva_wpeout_use_clean.wav', y_wpe.T, sr)
+    sf.write(r'audio\fast_wpe_iva_wpeout_use_clean.wav', y_wpe.T, sr)

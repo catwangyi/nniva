@@ -1,0 +1,15 @@
+22-11-16 11:31:09 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:167 - INFO ] Utt:1
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:170 - INFO ] This is BSS_eval
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:171 - INFO ] 	SDRi=-1.01
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:172 - INFO ] 	SIRi=3.81
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:173 - INFO ] 	SARi=-4.17
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:177 - INFO ] This is SISNR
+22-11-16 11:31:11 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:178 - INFO ] 	SI-SNRi=1.72
+22-11-16 11:31:14 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:182 - INFO ] This is PESQ
+22-11-16 11:31:14 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:183 - INFO ] 	model_PESQ=1.10
+22-11-16 11:31:14 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:184 - INFO ] 	orgin_PESQ=1.14
+22-11-16 11:31:14 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:185 - INFO ] 	PESQi=-0.04
+22-11-16 11:31:15 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:189 - INFO ] This is STOI
+22-11-16 11:31:15 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:190 - INFO ] 	model_STOI=0.49
+22-11-16 11:31:15 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:191 - INFO ] 	orgin_STOI=0.47
+22-11-16 11:31:15 [c:\Users\edisionwang\Desktop\nn_iva\evaluate.py:192 - INFO ] 	STOIi=0.02

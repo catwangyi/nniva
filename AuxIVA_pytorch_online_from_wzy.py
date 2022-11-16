@@ -26,7 +26,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None):
     N_fft = N_fft
     N_move = hop_len
     N_effective = int(N_fft/2+1) #也就是fft后，频率的最高点
-    window = torch.sqrt(torch.hann_window(N_fft, periodic = True, dtype=torch.float64))
+    window = torch.hann_window(N_fft, periodic = True, dtype=torch.float64)
 
     #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
     alpha = 0.96
@@ -159,9 +159,9 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'2Mic_2Src_Mic.wav'
-    out_path = r'AuxIVA_online_pytorch.wav'
-    clean_path = r'2Mic_2Src_Ref.wav'
+    mix_path = r'audio\2Mic_2Src_Mic.wav'
+    out_path = r'audio\wzy_AuxIVA_online_pytorch.wav'
+    clean_path = r'audio\2Mic_2Src_Ref.wav'
 
     # load singal
     x , sr = sf.read(mix_path)
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     clean = torch.from_numpy(clean.T)
     x = x[:, :clean.shape[-1]]
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 2048, hop_len=512, clean_sig=None)
+    y = auxIVA_online(x, N_fft = 1024, hop_len=256, clean_sig=None)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)

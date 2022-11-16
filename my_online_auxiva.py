@@ -78,14 +78,16 @@ def update_u(W, xxh, p, alpha, U, X):
         U[:, :, :, k] = U[:, :, :, k] / alpha - Unumer / Udenom # [513, 2, 2]
     return U
 
-def update_p(W, X, alpha, p):
+def update_p(W, X, alpha, p, Y=None):
     K_num = W.shape[-1]
     for k in range(K_num): 
         # r_hat_W1 = W[:, k, :].unsqueeze(1) # [513, 2] -> [513, 1, 2]
         # r_hat_phi = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 2]
         # r_hat_W2 = W[:, k, :].conj().unsqueeze(2) # [513, 2] ->[513, 2, 1]
-        temp_sum = torch.sum(W[:, k, :].unsqueeze(1) @ X.unsqueeze(2) @\
-        X.unsqueeze(1).conj() @ W[:, k, :].conj().unsqueeze(2))
+        if Y is None:
+            temp_sum = torch.sum(W[:, k, :].unsqueeze(1) @ X.unsqueeze(2) @ X.unsqueeze(1).conj() @ W[:, k, :].conj().unsqueeze(2))
+        else:
+            temp_sum = torch.sum(Y[...,k] * Y[...,k].conj())
         # a = r_hat_W1 @ X.unsqueeze(2) @ X.unsqueeze(1).conj() @ r_hat_W2
         deo = torch.sqrt(temp_sum.real)
         if deo < epsi:
@@ -93,14 +95,14 @@ def update_p(W, X, alpha, p):
         p[k] = (1-alpha) / deo # p就是1/r
     return p
 
-def update(V, alpha, p, xxh, X, W, U, A):
-    p = update_p(W, X, alpha, p)
+def update(V, alpha, p, xxh, X, W, U, A, Y):
+    p = update_p(W, X, alpha, p, Y)
     V = update_v(V, alpha, p, xxh)
     U = update_u(W, xxh, p, alpha, U, X)
     A, W = update_a_w(A, W, U, V)
     return A, W, U, V
 
-def auxIVA_online(x, N_fft = 1024, hop_len = 0):
+def auxIVA_online(x, N_fft = 1024, hop_len = 0, label=None):
     print(x.shape, x.dtype)
     K, N_y  = x.shape
     # parameter
@@ -135,7 +137,13 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
                              hop_length = N_move, 
                              window = window,
                              return_complex=True)
-
+    if label is not None:
+        label = torch.stft(label, 
+                             n_fft = N_fft,
+                             hop_length = N_move, 
+                             window = window,
+                             return_complex=True)
+        label = label.permute(2, 1, 0)
     C, N_fre, N_frame = X_mix_stft.shape
     X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]        
 
@@ -155,7 +163,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
                     A, W, U, V = init(X, alpha, xxh, temp_eye, U, V, p)
                     initial = 1
                 else:
-                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A)
+                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A, label[i] if label is not None else None)
                 # calculate output
                 A_temp = A * temp_eye # [513, 2, 2]
                 W_temp = W # [513, 2, 2]
@@ -175,15 +183,18 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'2Mic_2Src_Mic.wav'
-    out_path = r'AuxIVA_online_pytorch.wav'
-
+    mix_path = r'audio\2Mic_2Src_Mic.wav'
+    out_path = r'audio\only_auxiva.wav'
+    clean_path = r'audio\2Mic_2Src_Ref.wav'
     # load singal
     x , sr = sf.read(mix_path)
+    clean, sr = sf.read(clean_path)
+    x = x[..., :clean.shape[-1]]
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
+    clean = torch.from_numpy(clean.T)
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 2048, hop_len=512)
+    y = auxIVA_online(x, N_fft = 1024, hop_len=256, label=None)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)
