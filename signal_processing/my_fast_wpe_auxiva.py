@@ -121,8 +121,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label=None):
     alpha_iva = 0.96
     
     initial = 0
-    ref_num=15
-    delay_num=2
+    ref_num=10
+    delay_num=1
     gamma_wpe = 0.995
     wpe_beta = 0.5
 

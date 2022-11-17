@@ -95,7 +95,7 @@ def update_p(W, X, alpha, p, Y=None):
         p[k] = (1-alpha) / deo # p就是1/r
     return p
 
-def update(V, alpha, p, xxh, X, W, U, A, Y):
+def update(V, alpha, p, xxh, X, W, U, A, Y=None):
     p = update_p(W, X, alpha, p, Y)
     V = update_v(V, alpha, p, xxh)
     U = update_u(W, xxh, p, alpha, U, X)
@@ -163,7 +163,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label=None):
                     A, W, U, V = init(X, alpha, xxh, temp_eye, U, V, p)
                     initial = 1
                 else:
-                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A, label[i] if label is not None else None)
+                    A, W, U, V = update(V, alpha, p, xxh, X, W, U, A, None)
                 # calculate output
                 A_temp = A * temp_eye # [513, 2, 2]
                 W_temp = W # [513, 2, 2]

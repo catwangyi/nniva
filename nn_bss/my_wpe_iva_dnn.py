@@ -2,11 +2,13 @@ import torch
 import soundfile as sf
 from tqdm import tqdm
 epsi = torch.finfo(torch.float64).eps
-complex_type = torch.complex128
-real_type = torch.float64
+complex_type = torch.complex64
+real_type = torch.float32
+import warnings
+warnings.filterwarnings("ignore")
 device = torch.device('cuda:0')
-from models import my_model
-from loss import cal_p_loss, functional
+from models import GLUMask
+from loss import cal_p_loss, functional, cal_spec_loss
 
 def init(X, alpha, xxh, temp_eye, U, V, Y=None):
     N_effective = max(X.shape)
@@ -75,7 +77,7 @@ def update_v(V, alpha, p, xxh):
 def update_u(W, xxh, p, alpha, U, X):
     # return U
     N_effective, K_num = W.shape[0], W.shape[-1]
-    temp_u = []
+    # temp_u = []
     for k in range(K_num):
         Unumer = p[k] *  U[:, :, :, k] @ xxh @  U[:, :, :, k] # x * [513, 2, 2] * [513, 2, 2] * [513, 2, 2]
         # Udenom_temp_X1 = X.conj().unsqueeze(1) # [513, 2] -> [513, 1, 2]
@@ -86,8 +88,8 @@ def update_u(W, xxh, p, alpha, U, X):
         # Udenom = Udenom.real
         Udenom = torch.maximum(Udenom.real, epsi_mat)
         # U_temp =  U[:, :, :, k] / alpha - Unumer / Udenom
-        temp_u.append(U[:, :, :, k] / alpha - Unumer / Udenom) # [513, 2, 2]
-    return torch.stack(temp_u, dim=-1)
+        U[:, :, :, k] = (U[:, :, :, k] / alpha - Unumer / Udenom) # [513, 2, 2]
+    return U
 
 def create_p(W, X, alpha, Y=None):
     p = torch.zeros((W.shape[1], 1), dtype = real_type, device=device)
@@ -132,7 +134,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     joint_wpe=False
     gamma_wpe = 0.995
     wpe_beta = 0.5
-    model = my_model().to(device)
+    model = GLUMask(N_effective, 64).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     # initialization
@@ -164,7 +166,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                              n_fft = N_fft,
                              hop_length = N_move, 
                              window = window,
-                             return_complex=True)
+                             return_complex=True).type(complex_type)
         label = label.permute(2, 1, 0)
     C, N_fre, N_frame = X_mix_stft.shape
     X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]
@@ -218,10 +220,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                     Y_all[i] = (Wbp @ X.unsqueeze(2)).squeeze(-1) #[2, 513, 1]
                     continue
                 else:
-                    real_p = create_p(W, label[i], alpha_iva, label[i] if label is not None else None)
-                    a = torch.abs(X) # [513, 2]
-                    p = model(a.T.unsqueeze(0)).squeeze(0)
-                    loss = cal_p_loss(p, real_p)
+                    weight = model(X_mix_stft.permute(2, 1, 0)).permute(2, 1, 0)
+                    loss = cal_spec_loss(weight[i]*torch.abs(X), torch.abs(label[i]))
                     bar.set_postfix({'loss': f'{loss.item():.5e}'})
                      # calculate output
                     Wbp = A * temp_eye @ W # [513, 2, 2] * [513, 2, 2]
@@ -229,7 +229,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                     Y_all[i, ...] = (Wbp @ X.unsqueeze(2)).squeeze(-1)
                     loss.backward()
                     optimizer.step()
-
+                    p = create_p(W, weight[i]*X, alpha_iva)
                     V = update_v(V, alpha_iva, p, xxh)
                     U = update_u(W, xxh, p, alpha_iva, U, X)
                     A, W = update_a_w(A, W, U, V)
@@ -245,9 +245,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'audio/2Mic_2Src_Mic.wav'
-    out_path = r'audio/wpe_iva_dnn.wav'
-    clean_path = r'audio/2Mic_2Src_Ref.wav'
+    reb = 3
+    mix_path = 'audio\T60_0{}\\2Mic_2Src_Mic.wav'.format(reb)
+    out_path = 'audio\T60_0{}\\nara_wpe_iva.wav'.format(reb)
+    clean_path = 'audio\T60_0{}\\2Mic_2Src_Ref.wav'.format(reb)
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T).to(device)
     # load singal

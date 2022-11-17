@@ -3,8 +3,8 @@ import soundfile as sf
 from tqdm import tqdm
 
 epsi = torch.finfo(torch.float64).eps
-complex_type = torch.complex128
-real_type = torch.float64
+complex_type = torch.complex64
+real_type = torch.float32
 
 
 def inverse_2x2_matrix(mat):
@@ -39,7 +39,7 @@ def update_auxiva(V1, V2, y1, y2, vn1, vn2, W, alpha_iva, temp_eye):
     Wbp = (torch.linalg.pinv(W) * temp_eye) @ W # [513, 2, 2] * [513, 2, 2]
     return V1, V2, W, Wbp
 
-def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
+def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     print(x.shape, x.dtype)
     K, N_y  = x.shape
     # parameter
@@ -51,16 +51,14 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
     alpha_iva = 0.96
     
-    ref_num=15
-    delay_num=2
+    
+    delay_num=1
     joint_wpe = True
     wpe_beta = 0.9999
 
     # initialization
     # r = torch.zeros((K, 1), dtype = torch.float64)
     
-    V1 = torch.zeros((N_effective, K, K), dtype = complex_type) + 1e-12#[513, 20, 2]
-    V2 = torch.zeros((N_effective, K, K), dtype = complex_type) + 1e-12#[513, 20, 2]
     G_wpe1 = torch.zeros((N_effective, ref_num*K, K), dtype = complex_type)#[513, 20, 2]
     G_wpe2 = torch.zeros((N_effective, ref_num*K, K), dtype = complex_type)#[513, 20, 2]
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
@@ -68,6 +66,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     # init
     W = temp_eye.clone()
     Wbp = temp_eye.clone()
+    V1 = temp_eye.clone() * 1e-6
+    V2 = temp_eye.clone() * 1e-6
     invR_WPE1 = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
     invR_WPE2 = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
     X_mix_stft = torch.stft(x, 
@@ -124,18 +124,23 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\nara_wpe_iva.wav'
-    clean_path = r'audio\2Mic_2Src_Ref.wav'
-    clean, sr = sf.read(clean_path)
-    clean = torch.from_numpy(clean.T)
+    # reb = 1
+    mix_path = 'audio\\2Mic_2Src_Mic.wav'
+    out_path = 'audio\\nara_wpe_iva.wav'
+    # clean_path = 'audio\\2Mic_2Src_Ref.wav'
+    nfft = 1024
+    # clean, sr = sf.read(clean_path)
+    # clean = torch.from_numpy(clean.T)
     # load singal
     x , sr = sf.read(mix_path)
     # x = x[:5*16000]
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 1024, hop_len=256, label=clean)
+
+    # ref_num = int(0.4*reb*sr-4*nfft) // nfft +1
+    # print('refnum:', ref_num if ref_num>=1 else 1)
+    y = auxIVA_online(x, N_fft = nfft, hop_len=nfft//4, label=None, ref_num=10)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)
