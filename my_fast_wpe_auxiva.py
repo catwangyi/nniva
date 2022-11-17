@@ -241,20 +241,20 @@ if __name__ == "__main__":
     sf.write(out_path, y.T, sr)
     sf.write(r'audio\fast_wpe_iva_wpeout.wav', y_wpe.T, sr)
 
-    import time
-    mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\fast_wpe_iva_use_clean.wav'
-    clean_path = r'audio\2Mic_2Src_Ref.wav'
-    clean, sr = sf.read(clean_path)
-    clean = torch.from_numpy(clean.T)
-    # load singal
-    x , sr = sf.read(mix_path)
-    x = x[..., :clean.shape[-1]]
-    print(x.shape, x.dtype)
-    x = torch.from_numpy(x.T)
-    start_time = time.time()
-    y, y_wpe = auxIVA_online(x, N_fft = 1024, hop_len=256, label=clean)
-    end_time = time.time()
-    print('the cost of time {}'.format(end_time - start_time))
-    sf.write(out_path, y.T, sr)
-    sf.write(r'audio\fast_wpe_iva_wpeout_use_clean.wav', y_wpe.T, sr)
+    # import time
+    # mix_path = r'audio\2Mic_2Src_Mic.wav'
+    # out_path = r'audio\fast_wpe_iva_use_clean.wav'
+    # clean_path = r'audio\2Mic_2Src_Ref.wav'
+    # clean, sr = sf.read(clean_path)
+    # clean = torch.from_numpy(clean.T)
+    # # load singal
+    # x , sr = sf.read(mix_path)
+    # x = x[..., :clean.shape[-1]]
+    # print(x.shape, x.dtype)
+    # x = torch.from_numpy(x.T)
+    # start_time = time.time()
+    # y, y_wpe = auxIVA_online(x, N_fft = 1024, hop_len=256, label=clean)
+    # end_time = time.time()
+    # print('the cost of time {}'.format(end_time - start_time))
+    # sf.write(out_path, y.T, sr)
+    # sf.write(r'audio\fast_wpe_iva_wpeout_use_clean.wav', y_wpe.T, sr)
