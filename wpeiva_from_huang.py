@@ -179,6 +179,8 @@ def joint_WPEIVA(x, beta, ref_frames, ref_delay, n_fft,ref_sig=None, hop_len=Non
                     w = w @ torch.linalg.inv(torch.sqrt(torch.conj(w.T) @ Vtmp @ w)) # 因为 w'@V@w 的结果有负数，所以会导致取sqrt出错
                     W[k, :, freq_bin] = torch.conj(w.T.squeeze())
                 # MDP scaling
+                a = W[..., freq_bin]
+                print(a.shape)
                 Wbp[:, :, freq_bin] = torch.diag(torch.diag(torch.linalg.pinv(W[..., freq_bin]))) @ W[..., freq_bin]
             
             # Calculate outputs
@@ -194,10 +196,10 @@ if __name__ == "__main__":
     import time
 
     start = time.perf_counter()
-    audio, sr  = torchaudio.load('2Mic_2Src_Mic.wav')
+    audio, sr  = torchaudio.load('audio\\2Mic_2Src_Mic.wav')
     y,_, gwpe = joint_WPEIVA(audio, beta=0.33, ref_frames=10, ref_delay=1, n_fft=1024)
     
-    soundfile.write('seperated.wav', y.T.numpy(), sr)
-    soundfile.write('gwpe.wav', gwpe.T.numpy(), sr)
+    soundfile.write('audio\seperated.wav', y.T.numpy(), sr)
+    soundfile.write('audio\gwpe.wav', gwpe.T.numpy(), sr)
     end = time.perf_counter()
     print('time: %s'%(end-start))

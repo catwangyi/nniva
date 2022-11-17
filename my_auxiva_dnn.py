@@ -7,7 +7,7 @@ from tqdm import tqdm
 epsi = torch.finfo(torch.float64).eps
 complex_type = torch.complex128
 real_type = torch.float64
-device = torch.device('cpu')
+device = torch.device('cuda:0')
 from models import my_model
 from loss import cal_p_loss
 

@@ -7,7 +7,7 @@ class my_model(nn.Module):
     def __init__(self, in_channels=513, out_channels=1):
         super().__init__()
         # self.cov = nn.Conv1d(in_channels=513, out_channels=1, kernel_size=1, bias=False)
-        self.rnn = nn.LSTM(in_channels, 512, 3)
+        self.rnn = nn.LSTM(in_channels, 512, 1)
         self.linear = nn.Linear(512, out_channels)
         self.out = nn.Sigmoid()
     def forward(self, x):

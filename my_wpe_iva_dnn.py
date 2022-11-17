@@ -1,15 +1,12 @@
-import os
 import torch
 import soundfile as sf
 from tqdm import tqdm
-
 epsi = torch.finfo(torch.float64).eps
 complex_type = torch.complex128
 real_type = torch.float64
-device = torch.device('cpu')
+device = torch.device('cuda:0')
 from models import my_model
 from loss import cal_p_loss, functional
-
 
 def init(X, alpha, xxh, temp_eye, U, V, Y=None):
     N_effective = max(X.shape)
@@ -132,7 +129,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     initial = 0
     ref_num=15
     delay_num=2
-    joint_wpe=True
+    joint_wpe=False
     gamma_wpe = 0.995
     wpe_beta = 0.5
     model = my_model().to(device)
@@ -152,9 +149,9 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = complex_type, device=device).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     wpe_sigma = torch.zeros(N_effective, K, K, device=device)
     # init
-    W = temp_eye.clone()
-    A = temp_eye.clone()
-    Wbp = temp_eye.clone()
+    W = torch.repeat_interleave(torch.eye(K, dtype = complex_type, device=device).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
+    A = torch.repeat_interleave(torch.eye(K, dtype = complex_type, device=device).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
+    Wbp = torch.repeat_interleave(torch.eye(K, dtype = complex_type, device=device).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     invQ_WPE = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type, device=device).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
 
     X_mix_stft = torch.stft(x, 
@@ -184,10 +181,9 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
         bar = tqdm(range(N_frame), ascii=True)
         for i in bar:
             optimizer.zero_grad()
-            if i >=delay_num+ref_num:
-                if joint_wpe:
+            if i >=delay_num+ref_num and joint_wpe:
                     wpe_buffer = X_mix_stft[i-delay_num-ref_num:i-delay_num].permute(1, 2, 0) # [513, 2, 10]
-                    # X_D = torch.kron(torch.eye(K).unsqueeze(0), wpe_buffer.permute(1, 2, 0).contiguous()) #[1, 2, 2] * [513, 2, ref_num] -> [513, K**2, K*ref_num]
+                    # X_D = torch.kron(torch.eye(K).unsqueeze(0), wpe_buffer) #[1, 2, 2] * [513, 2, ref_num] -> [513, K**2, K*ref_num]
                     # X_D = X_D.reshape(N_effective, K, ref_num*(K**2)) # [513, 2, 2^2*ref_num]
                     X_D[...,0,:ref_num] = wpe_buffer[...,0,:]
                     X_D[...,1,-ref_num:] = wpe_buffer[...,1,:]
@@ -202,16 +198,14 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                     K_wpe = nominator @ inverse_2x2_matrix(gamma_wpe * wpe_sigma + X_D @ nominator) # [513, 40, 2]
                     invQ_WPE = (invQ_WPE - K_wpe @ X_D @ invQ_WPE) / gamma_wpe
                     # G_wpe = G_wpe
-                    new_g = G_wpe + K_wpe @ y_wpe[i, ...].unsqueeze(-1)
+                    G_wpe = G_wpe + K_wpe @ y_wpe[i, ...].unsqueeze(-1)
                     y_wpe[i, :, :] = X_mix_stft[i, ...] -  (X_D @ G_wpe).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
-                else:
-                    y_wpe[i, :, :] = X_mix_stft[i, ...]
             else:
                 y_wpe[i, :, :] = X_mix_stft[i, ...]
             if torch.prod(torch.prod(y_wpe[i, :, :]==0))==1:
                 Y_all[i, :, :] = y_wpe[i, :, :]
             else:
-                X = y_wpe[i, :, :] # [time, fre, C] -> [fre, C]
+                X = y_wpe[i, :, :].detach() # [time, fre, C] -> [fre, C]
                 phi_temp1 = X.unsqueeze(2)  # [513, 2] -> [513, 2, 1]
                 phi_temp2 = X.unsqueeze(1).conj() # [513, 2] -> [513, 1, 2]
                 xxh = torch.matmul(phi_temp1, phi_temp2) # [513, 2, 1] * [513, 1, 2] -> [513, 2, 2]
@@ -220,34 +214,26 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                     A, W, U, V = init(X, alpha_iva, xxh, temp_eye, U, V, label[i] if label is not None else None)
                     initial = 1
                     Wbp =  A * temp_eye  @ W # [513, 2, 2] * [513, 2, 2]
-                    Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] -> [513, 2, 1]
-                    Y_all[[i], ...] = (Y_temp.permute(2, 0, 1)) #[2, 513, 1]
+                    # Y_temp = Wbp @ X.unsqueeze(2) # [513, 2, 2] * [513, 2, 1] -> [513, 2, 1]
+                    Y_all[i] = (Wbp @ X.unsqueeze(2)).squeeze(-1) #[2, 513, 1]
                     continue
                 else:
                     real_p = create_p(W, label[i], alpha_iva, label[i] if label is not None else None)
-                    a = torch.abs(X) / torch.norm(torch.abs(X), p=2, dim=0, keepdim=True) # [513, 2]
+                    a = torch.abs(X) # [513, 2]
                     p = model(a.T.unsqueeze(0)).squeeze(0)
                     loss = cal_p_loss(p, real_p)
                     bar.set_postfix({'loss': f'{loss.item():.5e}'})
-                    
-                    
                      # calculate output
                     Wbp = A * temp_eye @ W # [513, 2, 2] * [513, 2, 2]
-                    Y_temp = (Wbp @ X.unsqueeze(2)).squeeze(-1) # [513, 2, 2] * [513, 2, 1] -> [513, 2]
-                    Y_all[i, ...] = Y_temp
+                    # Y_temp = (Wbp @ X.unsqueeze(2)).squeeze(-1) # [513, 2, 2] * [513, 2, 1] -> [513, 2]
+                    Y_all[i, ...] = (Wbp @ X.unsqueeze(2)).squeeze(-1)
                     loss.backward()
                     optimizer.step()
 
-                    new_V = update_v(V, alpha_iva, p, xxh)
-                    new_U = update_u(W, xxh, p, alpha_iva, U, X)
-                    new_A, new_W = update_a_w(A, W, new_U, new_V)
-
-                    A = new_A.clone()
-                    W = new_W.clone()
-                    U = new_U.clone()
-                    V = new_V.clone()
-                    if i >= ref_num+delay_num:
-                        G_wpe = new_g.clone()
+                    V = update_v(V, alpha_iva, p, xxh)
+                    U = update_u(W, xxh, p, alpha_iva, U, X)
+                    A, W = update_a_w(A, W, U, V)
+                    torch.cuda.empty_cache()
 
     Y_all = Y_all.permute(2, 1, 0).contiguous()
     y_wpe = y_wpe.permute(2, 1, 0).contiguous()
@@ -266,8 +252,8 @@ if __name__ == "__main__":
     clean = torch.from_numpy(clean.T).to(device)
     # load singal
     x , sr = sf.read(mix_path)
-    x = x[:4*16000]
-    clean = clean[:4*16000]
+    # x = x[:4*16000]
+    # clean = clean[:4*16000]
     x = x[:clean.shape[-1]]
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T).to(device)
