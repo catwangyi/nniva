@@ -190,7 +190,7 @@ def auxIVA_online(inpt, target=None, using_dnn=True):
                     
                     # print(f'model:{model.cov.weight._version}')
                     # print(f'a:{a._version}')
-                    if i >=30:
+                    if True:
                         real_p = create_p(W, X, alpha_iva)
                         p = model(real_p)
                     else:
@@ -202,7 +202,7 @@ def auxIVA_online(inpt, target=None, using_dnn=True):
                     Y_temp = (Wbp @ X.unsqueeze(2)).squeeze(-1) # [513, 2, 2] * [513, 2, 1] -> [513, 2]
                     Y_all.append(Y_temp) #[513, 2]
                 
-                if i >= 30:
+                if True:
                     loss = cal_spec_loss(torch.abs(Y_temp), torch.abs(label[i]))
                     bar.set_postfix({'loss':f'{loss.item():.5e}'})
 
@@ -212,10 +212,10 @@ def auxIVA_online(inpt, target=None, using_dnn=True):
                     # print(f'model:{model.cov.weight._version}')
                     optimizer.step()        # calculate output
                 # print(f'model:{model.cov.weight._version}')
-                A = new_A.detach().clone()
-                W = new_W.detach().clone()
-                U = new_U.detach().clone()
-                V = new_V.detach().clone()
+                A = new_A.detach()
+                W = new_W.detach()
+                U = new_U.detach()
+                V = new_V.detach()
 
         Y_all = torch.stack(Y_all, dim=0)
     # y_all [T, F, 2]
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     import time
     dnn = True
     mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\n2ntest.wav'
+    out_path = r'audio\n2n_iva_test.wav'
 
     # load singal
     x , sr = torchaudio.load(mix_path)

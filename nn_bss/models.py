@@ -1,14 +1,16 @@
 import torch
 from torch import nn
-
+complex_type = torch.complex128
+real_type = torch.float64
 from linalg import divide, mag_sq
 
 class my_model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(1, 1).type(torch.float64)
+        self.linear = nn.Linear(1, 1).type(real_type)
     def forward(self, x):
-        return torch.sigmoid(self.linear(x)) * x
+        b = torch.relu(self.linear(x)) + x
+        return b
 
 class GLULayer(nn.Module):
     def __init__(
