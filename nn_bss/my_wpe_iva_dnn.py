@@ -2,8 +2,8 @@ import torch
 import soundfile as sf
 from tqdm import tqdm
 epsi = torch.finfo(torch.float64).eps
-complex_type = torch.complex64
-real_type = torch.float32
+complex_type = torch.complex128
+real_type = torch.float64
 import warnings
 warnings.filterwarnings("ignore")
 device = torch.device('cuda:0')
@@ -236,19 +236,18 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None):
                     torch.cuda.empty_cache()
 
     Y_all = Y_all.permute(2, 1, 0).contiguous()
-    y_wpe = y_wpe.permute(2, 1, 0).contiguous()
+    # y_wpe = y_wpe.permute(2, 1, 0).contiguous()
     # print(Y_all.shape)
-    y_wpe = torch.istft(y_wpe, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
+    # y_wpe = torch.istft(y_wpe, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
     y_iva = torch.istft(Y_all, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
     # print(y_iva.shape)
-    return y_iva, y_wpe
+    return y_iva
 
 if __name__ == "__main__":
     import time
-    reb = 3
-    mix_path = 'audio\T60_0{}\\2Mic_2Src_Mic.wav'.format(reb)
-    out_path = 'audio\T60_0{}\\nara_wpe_iva.wav'.format(reb)
-    clean_path = 'audio\T60_0{}\\2Mic_2Src_Ref.wav'.format(reb)
+    mix_path = 'audio\\2Mic_2Src_Mic.wav'
+    out_path = 'audio\\gwpe_iva.wav'
+    clean_path = 'audio\\2Mic_2Src_Ref.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T).to(device)
     # load singal
@@ -260,8 +259,8 @@ if __name__ == "__main__":
     x = torch.from_numpy(x.T).to(device)
     start_time = time.time()
     with torch.autograd.set_detect_anomaly(True):
-        y, y_wpe = auxIVA_online(x, N_fft = 1024, hop_len=256, label=clean)
+        y = auxIVA_online(x, N_fft = 1024, hop_len=256, label=clean)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.detach().cpu().T, sr)
-    sf.write('audio/wpe_iva_dnn_wpe_out.wav', y_wpe.detach().cpu().T, sr)
+    # sf.write('audio/wpe_iva_dnn_wpe_out.wav', y_wpe.detach().cpu().T, sr)

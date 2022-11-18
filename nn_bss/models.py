@@ -1,16 +1,34 @@
 import torch
 from torch import nn
-complex_type = torch.complex128
-real_type = torch.float64
+complex_type = torch.complex64
+real_type = torch.float32
 from linalg import divide, mag_sq
-
+torch.set_default_tensor_type(torch.DoubleTensor)
 class my_model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(1, 1).type(real_type)
+        # self.dnn = nn.LSTM(513, 256, 4, bidirectional=True).type(real_type)
+        # self.dnn2 = nn.Linear(512, 513)
+        self.dnn = nn.Sequential(
+            # nn.LayerNorm(513),
+            nn.Linear(513, 256),
+            # nn.LayerNorm(256),
+            nn.ReLU(),
+            # nn.Linear(256, 256),
+            # nn.LayerNorm(256),
+            # nn.ReLU(),
+            # nn.Linear(256, 256),
+            # nn.LayerNorm(256),
+            # nn.ReLU(),
+            # nn.Linear(256, 256),
+            # nn.LayerNorm(256),
+            # nn.ReLU(),
+            nn.Linear(256, 1),
+            # nn.LayerNorm(256),
+            nn.ReLU(),
+        ).type(real_type)
     def forward(self, x):
-        b = torch.relu(self.linear(x)) + x
-        return b
+        return self.dnn(x)
 
 class GLULayer(nn.Module):
     def __init__(
