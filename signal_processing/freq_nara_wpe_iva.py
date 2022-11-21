@@ -43,8 +43,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     # initialization
     # r = torch.zeros((K, 1), dtype = torch.float64)
     
-    G_wpe1 = torch.zeros((N_effective, ref_num*K, K), dtype = complex_type)#[513, 20, 2]
-    G_wpe2 = torch.zeros((N_effective, ref_num*K, K), dtype = complex_type)#[513, 20, 2]
+    G_wpe1 = torch.zeros((N_effective, (ref_num//2)*K, K), dtype = complex_type)#[513, 20, 2]
+    G_wpe2 = torch.zeros((N_effective, (ref_num//2)*K, K), dtype = complex_type)#[513, 20, 2]
     temp_eye = torch.repeat_interleave(torch.eye(K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 2, 2]
     # wpe_sigma = torch.zeros(N_effective, K, K)
     # init
@@ -52,8 +52,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     Wbp = temp_eye.clone()
     V1 = temp_eye.clone() * 1e-6
     V2 = temp_eye.clone() * 1e-6
-    invR_WPE1 = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
-    invR_WPE2 = torch.repeat_interleave(torch.eye(ref_num*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
+    invR_WPE1 = torch.repeat_interleave(torch.eye((ref_num//2)*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
+    invR_WPE2 = torch.repeat_interleave(torch.eye((ref_num//2)*K, dtype = complex_type).unsqueeze(0), N_effective, dim = 0) # [513, 40, 40]
     X_mix_stft = torch.stft(x, 
                              n_fft = N_fft,
                              hop_length = N_move, 
@@ -73,23 +73,27 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     for iter in range(1):
         # init paras and buffers
         Y_all = torch.zeros_like(X_mix_stft)
-        wpe_buffer = torch.cat([torch.zeros(ref_num+delay_num, N_effective, K, dtype=complex_type), X_mix_stft], dim=0)
-        for i in tqdm(range(ref_num, N_frame+ref_num), ascii=True):
-            if torch.prod(torch.prod(X_mix_stft[i-ref_num, :, :]==0))==1:
-                Y_all[i-ref_num, :, :] = X_mix_stft[i-ref_num, :, :]
+        start = 2*ref_num
+        wpe_buffer = torch.cat([torch.zeros(start+delay_num, N_effective, K, dtype=complex_type), X_mix_stft], dim=0)
+        for i in tqdm(range(start, start+N_frame), ascii=True):
+            if torch.prod(torch.prod(X_mix_stft[i-start, :, :]==0))==1:
+                Y_all[i-start, :, :] = X_mix_stft[i-start, :, :]
             else:
                 if joint_wpe:
-                    temp = wpe_buffer[i-ref_num:i].permute(1, 2, 0) # [10, 513, 2]- >[513, 2, 10]
+                    low = wpe_buffer[i-ref_num//2:i, :N_effective//2]
+                    high = wpe_buffer[i-ref_num:i:2, N_effective//2:]
+                    temp =  torch.cat([low, high], dim=1).permute(1, 2, 0)# [10, 513, 2]- >[513, 2, 10]
+                    # temp = wpe_buffer[i-start:i].permute(1, 2, 0) # [10, 513, 2]- >[513, 2, 10]
                     x_D = torch.flatten(temp, -2, -1).unsqueeze(-1) #[513, 20, 1]
-                    y1 = X_mix_stft[i-ref_num] - (G_wpe1.conj().transpose(-1, -2) @ x_D).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
-                    y2 = X_mix_stft[i-ref_num] - (G_wpe2.conj().transpose(-1, -2) @ x_D).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
+                    y1 = X_mix_stft[i-start, :, :] - (G_wpe1.conj().transpose(-1, -2) @ x_D).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
+                    y2 = X_mix_stft[i-start, :, :] - (G_wpe2.conj().transpose(-1, -2) @ x_D).squeeze(-1) # [513, 2] - [513, 2, 40] *[513, 40, 1]
                 else:
-                    y1 = X_mix_stft[i-ref_num]
-                    y2 = X_mix_stft[i-ref_num]
-                vn1 = torch.mean(torch.abs(Wbp[..., [0], :] @ y1.unsqueeze(-1))**2)
-                vn2 = torch.mean(torch.abs(Wbp[..., [1], :] @ y2.unsqueeze(-1))**2)
-                # vn1 = torch.mean(torch.abs(label[i-ref_num,...,0])**2)
-                # vn2 = torch.mean(torch.abs(label[i-ref_num,...,1])**2)
+                    y1 = X_mix_stft[i-start]
+                    y2 = X_mix_stft[i-start]
+                # vn1 = torch.mean(torch.abs(Wbp[..., [0], :] @ y1.unsqueeze(-1))**2)
+                # vn2 = torch.mean(torch.abs(Wbp[..., [1], :] @ y2.unsqueeze(-1))**2)
+                vn1 = torch.mean(torch.abs(label[i-start,...,0])**2)
+                vn2 = torch.mean(torch.abs(label[i-start,...,1])**2)
                 if joint_wpe:
                     # update
                     K_wpe = (invR_WPE1 @ x_D) / (wpe_beta * vn1 + x_D.conj().transpose(-1, -2) @ invR_WPE1 @ x_D) # [513, 20, 1]
@@ -101,7 +105,7 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
                 V1, V2, W, Wbp = update_auxiva(V1, V2, y1, y2, vn1, vn2, W, alpha_iva, temp_eye)
                 pred_1 = Wbp[..., [0], :] @ y1.unsqueeze(-1) # [513, 1, 1]
                 pred_2 = Wbp[..., [1], :] @ y2.unsqueeze(-1)
-                Y_all[i-ref_num] = torch.cat([pred_1, pred_2], dim=-2).squeeze(-1)
+                Y_all[i-start] = torch.cat([pred_1, pred_2], dim=-2).squeeze(-1)
 
     Y_all = Y_all.permute(2, 1, 0).contiguous()
     y_iva = torch.istft(Y_all, n_fft=N_fft, hop_length=N_move, window=window, length=N_y)
@@ -110,11 +114,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
 if __name__ == "__main__":
     import time
     # reb = 1
-    mix_path = 'audio\\2Mic_2Src_Mic.wav'
-    
-    clean_path = 'audio\\2Mic_2Src_Ref.wav'
+    mix_path = r'audio\2Mic_2Src_Mic.wav'
+    clean_path = r'audio\2Mic_2Src_Ref.wav'
     nfft = 512
-    out_path = f'audio\\nara_wpe_iva_{nfft}_ref10.wav'
+    out_path = f'audio\\freq_nara_wpe_iva_{nfft}_use_clean.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T)
     # load singal

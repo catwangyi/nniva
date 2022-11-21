@@ -184,7 +184,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label=None):
 if __name__ == "__main__":
     import time
     mix_path = r'audio\2Mic_2Src_Mic.wav'
-    out_path = r'audio\only_auxiva.wav'
+    out_path = r'audio\only_auxiva_2048.wav'
     clean_path = r'audio\2Mic_2Src_Ref.wav'
     # load singal
     x , sr = sf.read(mix_path)
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     x = torch.from_numpy(x.T)
     clean = torch.from_numpy(clean.T)
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 1024, hop_len=256, label=None)
+    y = auxIVA_online(x, N_fft = 2048, hop_len=512, label=None)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)

@@ -1,34 +1,92 @@
 import torch
 from torch import nn
-complex_type = torch.complex64
-real_type = torch.float32
+import torch.nn.functional as functional
+complex_type = torch.complex128
+real_type = torch.float64
 from linalg import divide, mag_sq
 torch.set_default_tensor_type(torch.DoubleTensor)
-class my_model(nn.Module):
+
+class gate_deconv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+        self.conv1 = nn.Sequential(
+            nn.ConvTranspose1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride),
+            nn.BatchNorm1d(out_channels),
+        )
+        self.conv2 = nn.Sequential(
+            nn.ConvTranspose1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride),
+            nn.BatchNorm1d(out_channels),
+        ) 
+    def forward(self, x):
+        return self.conv1(x) * torch.sigmoid(self.conv2(x))
+
+class gate_conv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride),
+            nn.BatchNorm1d(out_channels),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride),
+            nn.BatchNorm1d(out_channels),
+        ) 
+    def forward(self, x):
+        return self.conv1(x) * torch.sigmoid(self.conv2(x))
+
+class crn_model(nn.Module):
     def __init__(self):
+        super().__init__()
+        self.gate1 = gate_conv(in_channels=2, out_channels=16, kernel_size=3, stride=2) # 256
+        self.gate2 = gate_conv(in_channels=16, out_channels=32, kernel_size=3, stride=2) # 127
+        self.gate3 = gate_conv(in_channels=32, out_channels=64, kernel_size=3, stride=2) # 63
+        self.lstm = nn.LSTM(64, 128, 1, bidirectional=True)
+        self.dnn = nn.Linear(256, 64)
+        self.degate3 = gate_deconv(in_channels=64, out_channels=32, kernel_size=3, stride=2)
+        self.degate2 = gate_deconv(in_channels=32, out_channels=16, kernel_size=3, stride=2)
+        self.degate1 = gate_deconv(in_channels=16, out_channels=1, kernel_size=3, stride=2)
+        
+
+    def forward(self, x):
+        power = torch.mean((x.real)**2 + (x.imag)**2 + 1e-12, dim=[-1], keepdim=True)
+        inpt_real = torch.log10(torch.abs(x.real) / torch.sqrt(power) + 1e-12)
+        inpt_imag = torch.log10(torch.abs(x.imag) / torch.sqrt(power) + 1e-12)
+        inpt = torch.cat([inpt_real, inpt_imag], dim=-2)
+        enc1 = self.gate1(inpt) # 256
+        enc2 = self.gate2(functional.pad(enc1, pad=[1, 0])) # 128
+        enc3 = self.gate3(functional.pad(enc2, pad=[1, 0])) # 64
+        enh = self.dnn(self.lstm(enc3)[0])
+        dec3 = self.degate3(enh)
+        dec2 = self.degate2(dec3)[..., :-2]
+        dec1 = self.degate1(dec2)[..., :-2]
+        return dec1
+
+
+class my_model(nn.Module):
+    def __init__(self, in_channels):
         super().__init__()
         # self.dnn = nn.LSTM(513, 256, 4, bidirectional=True).type(real_type)
         # self.dnn2 = nn.Linear(512, 513)
-        self.dnn = nn.Sequential(
-            # nn.LayerNorm(513),
-            nn.Linear(513, 256),
-            # nn.LayerNorm(256),
-            nn.ReLU(),
-            # nn.Linear(256, 256),
-            # nn.LayerNorm(256),
-            # nn.ReLU(),
-            # nn.Linear(256, 256),
-            # nn.LayerNorm(256),
-            # nn.ReLU(),
-            # nn.Linear(256, 256),
-            # nn.LayerNorm(256),
-            # nn.ReLU(),
-            nn.Linear(256, 1),
-            # nn.LayerNorm(256),
-            nn.ReLU(),
-        ).type(real_type)
+        self.dnn1 = nn.Linear(in_channels, 256).type(real_type)
+        self.norm1 = nn.LayerNorm(256).type(real_type)
+        self.dnn2 = nn.Linear(256, 128).type(real_type)
+        self.norm2 = nn.LayerNorm(128).type(real_type)
+        self.dnn3 = nn.Linear(128, 1).type(real_type)
+        # self.norm3 = nn.LayerNorm(1).type(real_type)
+
+        nn.init.xavier_uniform_(self.dnn1.weight)
+        nn.init.xavier_uniform_(self.dnn2.weight)
+        nn.init.xavier_uniform_(self.dnn3.weight)
+
     def forward(self, x):
-        return self.dnn(x)
+        power = torch.mean((x.real)**2 + (x.imag)**2 + 1e-12, dim=[-1], keepdim=True)
+        inpt_real = torch.log10(torch.abs(x.real) / torch.sqrt(power) + 1e-12)
+        inpt_imag = torch.log10(torch.abs(x.imag) / torch.sqrt(power) + 1e-12)
+        inpt = torch.cat([inpt_real, inpt_imag], dim=-2)
+        x1 = torch.relu(self.norm1(self.dnn1(inpt)))
+        x2 = torch.relu(self.norm2(self.dnn2(x1)))
+        x3 = torch.sigmoid(self.dnn3(x2))
+        return x3
 
 class GLULayer(nn.Module):
     def __init__(
@@ -203,7 +261,7 @@ class GLUMask(nn.Module):
         return weights.reshape(batch_shape + (n_freq, n_frames))
 
 if __name__ == "__main__":
-    input = torch.rand(1, 513, 44)
+    input = torch.rand(1, 513, 1)
     model = GLUMask(513, 64)
     out = model(input)
     print(out.shape)
