@@ -1,6 +1,7 @@
 import torch
 import soundfile as sf
 from tqdm import tqdm
+from torch.optim import lr_scheduler
 
 epsi = torch.finfo(torch.float64).eps
 device = torch.device('cuda:0')
@@ -35,10 +36,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     window = torch.hann_window(N_fft, periodic = True, dtype=real_type, device=device)
     model = my_model(N_effective).to(device)
     # model = crn_model().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     #注意matlab的hanning不是从零开始的，而python的hanning是从零开始
     alpha_iva = 0.96
-    
+    sche = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
     
     delay_num=1
     joint_wpe = True
@@ -73,7 +74,8 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
     C, N_fre, N_frame = X_mix_stft.shape
     X_mix_stft = X_mix_stft.permute(2, 1, 0).contiguous() # [C, fre, time] -> [time, fre, C]
     # aux_IVA_online
-    for iter in range(1):
+    for iter in range(50):
+        total_loss = torch.tensor(0.)
         # init paras and buffers
         Y_all = torch.zeros_like(X_mix_stft)
         start = 2*ref_num
@@ -125,9 +127,11 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
                 Y_all[i-start] = pred
                 loss = cal_spec_loss(torch.abs(pred), torch.abs(label[i-start]))
                 # loss = functional.mse_loss(real_vn1, vn1) + functional.mse_loss(real_vn2, vn2)
-                bar.set_postfix({'loss':f'{loss.item():.5e}'})
+                total_loss += loss.item()
+                bar.set_postfix({'loss':f'{total_loss.item() / i:.5e}'})
                 loss.backward(retain_graph=False)
-                optimizer.step()
+                # optimizer.step()
+                sche.step()
                 if joint_wpe:
                     G_wpe1 = new_G_wpe1.detach()
                     invR_WPE1 = new_invR_WPE1.detach()
@@ -145,10 +149,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10):
 if __name__ == "__main__":
     import time
     # reb = 1
-    mix_path = r'audio\2Mic_2Src_Mic.wav'
-    clean_path = r'audio\2Mic_2Src_Ref.wav'
+    mix_path = r'audio\T60_04\2Mic_2Src_Mic.wav'
+    clean_path = r'audio\T60_04\2Mic_2Src_Ref.wav'
     nfft = 1024
-    out_path = f'audio\dnn_n2n_freq_nara_wpe_iva_{nfft}.wav'
+    out_path = f'audio\T60_04\dnn_n2n_freq_nara_wpe_iva_{nfft}_50epoch.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T)
     # load singal
