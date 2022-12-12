@@ -23,13 +23,14 @@ def inverse_2x2_matrix(mat):
     b = mat[..., 0, 1]
     c = mat[..., 1, 0]
     d = mat[..., 1, 1]
-    if(torch.any(a*d == b*c)):
-        raise Exception('mat can not be inversed')
+    num = a*d-b*c
+    if(torch.any(num==0)):
+        num = num+1e-6
     new_mat = torch.zeros_like(mat)
-    new_mat[..., 0, 0] = d / (a*d-b*c)
-    new_mat[..., 0, 1] = -b / (a*d-b*c)
-    new_mat[..., 1, 0] = -c / (a*d-b*c)
-    new_mat[..., 1, 1] = a / (a*d-b*c)
+    new_mat[..., 0, 0] = d / num
+    new_mat[..., 0, 1] = -b / num
+    new_mat[..., 1, 0] = -c / num
+    new_mat[..., 1, 1] = a / num
     return new_mat
 
 def update_a_w(A, W, U, V):

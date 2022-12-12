@@ -92,6 +92,16 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10, groups
                         # 分高低频
                         low = wpe_buffer[i+ref_num//2:i+ref_num:1, :(N_effective+1)//2] #高低频都减半
                         high = wpe_buffer[i+ref_num//2:i+ref_num:1, (N_effective+1)//2:]#高低频都减半
+
+                        # low = wpe_buffer[i:i+ref_num:2, :(N_effective+1)//2] #低频间隔
+                        # high = wpe_buffer[i+ref_num//2:i+ref_num:1, (N_effective+1)//2:]#高频减半
+
+                        # low = wpe_buffer[i+ref_num//2:i+ref_num:1, :(N_effective+1)//2] #低频减半
+                        # high = wpe_buffer[i:i+ref_num:2, (N_effective+1)//2:]#高频间隔
+
+                        # low = wpe_buffer[i:i+ref_num:2, :(N_effective+1)//2] #高低频都间隔
+                        # high = wpe_buffer[i:i+ref_num:2, (N_effective+1)//2:]#高低频都间隔
+
                         new_spec =  torch.cat([low, high], dim=1)[..., (i)%groups::groups, :]# [10, 513, 2]- >[513, 2, 10]
                         temp = new_spec.permute(1, 2, 0)
                     else:
@@ -107,10 +117,10 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10, groups
                 else:
                     y1 = X_mix_stft[i]
                     y2 = X_mix_stft[i]
-                # vn1 = torch.mean(torch.abs(Wbp[..., [0], :] @ y1.unsqueeze(-1))**2)
-                # vn2 = torch.mean(torch.abs(Wbp[..., [1], :] @ y2.unsqueeze(-1))**2)
-                vn1 = torch.mean(torch.abs(label[i,...,0])**2)
-                vn2 = torch.mean(torch.abs(label[i,...,1])**2)
+                vn1 = torch.mean(torch.abs(Wbp[..., [0], :] @ y1.unsqueeze(-1))**2)
+                vn2 = torch.mean(torch.abs(Wbp[..., [1], :] @ y2.unsqueeze(-1))**2)
+                # vn1 = torch.mean(torch.abs(label[i,...,0])**2)
+                # vn2 = torch.mean(torch.abs(label[i,...,1])**2)
                 if joint_wpe:
                     # update
                     temp = x_D.conj().transpose(-1, -2).contiguous()
@@ -132,12 +142,13 @@ def auxIVA_online(x, N_fft = 2048, hop_len = 0, label = None, ref_num=10, groups
 if __name__ == "__main__":
     import time
     # reb = 1
-    mix_path = r'audio\2Mic_2Src_Mic.wav'
+    mix_path = r'audio\mix_noise.wav'
     clean_path = r'audio\2Mic_2Src_Ref.wav'
     nfft = 1024
     delay_num = 0
     groups = 2
-    out_path = f'audio\\jump_nara_iva_{nfft}_group_{groups}_delay_{delay_num}.wav'
+    ref_num = 10
+    out_path = f'audio\\jump_nara_iva_{nfft}_group_{groups}_delay_{delay_num}_ref_{ref_num}.wav'
     clean, sr = sf.read(clean_path)
     clean = torch.from_numpy(clean.T)
     # load singal
@@ -149,7 +160,7 @@ if __name__ == "__main__":
 
     # ref_num = int(0.4*reb*sr-4*nfft) // nfft +1
     # print('refnum:', ref_num if ref_num>=1 else 1)
-    y = auxIVA_online(x, N_fft = nfft, hop_len=nfft//4, label=clean, ref_num=5, groups=groups, delay_num=delay_num)
+    y = auxIVA_online(x, N_fft = nfft, hop_len=nfft//4, label=clean, ref_num=ref_num, groups=groups, delay_num=delay_num)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)

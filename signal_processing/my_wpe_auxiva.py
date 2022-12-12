@@ -1,6 +1,7 @@
 from logging import exception
 import os
 from tkinter import Y
+import torch.nn.functional as functional
 from numpy import transpose
 import torch
 import soundfile as sf
@@ -122,7 +123,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label = None):
     alpha_iva = 0.96
     
     initial = 0
-    ref_num=20
+    ref_num=5
     delay_num=1
     gamma_wpe = 0.995
     wpe_beta = 0.5
@@ -165,11 +166,10 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label = None):
         # init paras and buffers
         Y_all = torch.zeros_like(X_mix_stft)
         y_wpe = torch.zeros_like(X_mix_stft)
-        wpe_buffer = torch.cat([torch.zeros(ref_num+delay_num, N_effective, K, dtype=complex_type), X_mix_stft], dim=0)
+        wpe_buffer = functional.pad(X_mix_stft, pad=[0, 0, 0, 0, delay_num+ref_num, 0])
         Y_all[0:ref_num+delay_num, ...] = X_mix_stft[0:ref_num+delay_num, ...]
         y_wpe[0:ref_num+delay_num, ...] = X_mix_stft[0:ref_num+delay_num, ...]
         # wpe_buffer = X_mix_stft[0:ref_num, :, :]
-
         for i in tqdm(range(N_frame), ascii=True):
             if torch.prod(torch.prod(X_mix_stft[i, :, :]==0))==1:
                 Y_all[i, :, :] = X_mix_stft[i, :, :]
@@ -199,7 +199,7 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label = None):
                     A, W, U, V = init(X, alpha_iva, xxh, temp_eye, U, V)
                     initial = 1
                 else:
-                    A, W, U, V = update(V, alpha_iva, xxh, X, W, U, A, label[i])
+                    A, W, U, V = update(V, alpha_iva, xxh, X, W, U, A)
                 # calculate output
                 A_temp = A * temp_eye # [513, 2, 2]
                 W_temp = W # [513, 2, 2]
@@ -217,18 +217,18 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, label = None):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'audio\\2Mic_2Src_Mic.wav'
-    out_path = r'audio\gwpe_iva_512_ref20.wav'
-    clean_path = r'audio\\2Mic_2Src_Ref.wav'
-    clean, sr = sf.read(clean_path)
-    clean = torch.from_numpy(clean.T)
+    mix_path = r'audio\引发grad为nan的输入.wav'
+    out_path = r'audio\gwpe_iva_1024_ref_10.wav'
+    # clean_path = r'audio\2Mic_2Src_Ref.wav'
+    # clean, sr = sf.read(clean_path)
+    # clean = torch.from_numpy(clean.T)
     # load singal
     x , sr = sf.read(mix_path)
-    x = x[..., :clean.shape[-1]]
+    # x = x[..., :clean.shape[-1]]
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
     start_time = time.time()
-    y = auxIVA_online(x, N_fft = 512, hop_len=128, label=clean)
+    y = auxIVA_online(x, N_fft = 1024, hop_len=256)
     end_time = time.time()
     print('the cost of time {}'.format(end_time - start_time))
     sf.write(out_path, y.T, sr)

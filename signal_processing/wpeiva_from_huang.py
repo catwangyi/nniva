@@ -100,7 +100,7 @@ def joint_WPEIVA(x, beta, ref_frames, ref_delay, n_fft,ref_sig=None, hop_len=Non
         X_GWPE[:, frame, :] = X[:, frame, :]
 
     for frame in range(ref_frames + ref_delay, n_frames):
-        print(frame)
+        # print(frame)
         # GWPE update
         X_BUFFER = torch.cat((X_MIC[:, [frame], :], X_BUFFER[:, :-1, :]), dim=1)
         for freq in range(n_freq):
@@ -180,7 +180,7 @@ def joint_WPEIVA(x, beta, ref_frames, ref_delay, n_fft,ref_sig=None, hop_len=Non
                     W[k, :, freq_bin] = torch.conj(w.T.squeeze())
                 # MDP scaling
                 a = W[..., freq_bin]
-                print(a.shape)
+                # print(a.shape)
                 Wbp[:, :, freq_bin] = torch.diag(torch.diag(torch.linalg.pinv(W[..., freq_bin]))) @ W[..., freq_bin]
             
             # Calculate outputs
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     import time
 
     start = time.perf_counter()
-    audio, sr  = torchaudio.load('audio\\2Mic_2Src_Mic.wav')
+    audio, sr  = torchaudio.load('audio\引发grad为nan的输入.wav')
     y,_, gwpe = joint_WPEIVA(audio, beta=0.33, ref_frames=10, ref_delay=1, n_fft=1024)
     
     soundfile.write('audio\seperated.wav', y.T.numpy(), sr)

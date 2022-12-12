@@ -159,17 +159,17 @@ def auxIVA_online(x, N_fft = 1024, hop_len = 0, clean_sig = None):
 
 if __name__ == "__main__":
     import time
-    mix_path = r'audio\2Mic_2Src_Mic.wav'
+    mix_path = r'audio\引发grad为nan的输入.wav'
     out_path = r'audio\wzy_AuxIVA_online_pytorch.wav'
-    clean_path = r'audio\2Mic_2Src_Ref.wav'
+    # clean_path = r'audio\2Mic_2Src_Ref.wav'
 
     # load singal
     x , sr = sf.read(mix_path)
-    clean, _ = sf.read(clean_path)
+    # clean, _ = sf.read(clean_path)
     print(x.shape, x.dtype)
     x = torch.from_numpy(x.T)
-    clean = torch.from_numpy(clean.T)
-    x = x[:, :clean.shape[-1]]
+    # clean = torch.from_numpy(clean.T)
+    # x = x[:, :clean.shape[-1]]
     start_time = time.time()
     y = auxIVA_online(x, N_fft = 1024, hop_len=256, clean_sig=None)
     end_time = time.time()
